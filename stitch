@@ -1,34 +1,116 @@
 #!/usr/bin/env bash
 
-CONFIG=~/.stitchrc
+set -e
+
+EMAIL=~/.stitch_email
+SOURCE=~/.stitch_source
+
+strjoin () {
+  (IFS=$1; shift; echo "$*");
+}
 
 make_email() {
-  base=`grep -F 'base_email:' $CONFIG  | cut -d':' -f 2-`
-  user=`echo $base | cut -d'@' -f 1`
-  domain=`echo $base | cut -d'@' -f 2-`
+  user=`cut -d'@' -f 1 $EMAIL`
+  domain=`cut -d'@' -f 2- $EMAIL`
   
-  printf '%s+%s+%s@%s' $user $1 $2 $domain
+  printf '%s+%s@%s' $user $(strjoin '+' "$@") $domain
 }
 
 get_name() {
   content=$(curl -L bitbucket.org/$1 2>/dev/null)
   
-  echo $content |\
+  echo -ne $content |\
     sed ':a;N;$!ba;s/\n/ /g' |\
     grep -Po '<h1>.*?<' |\
     head -n1 |\
-    sed -n 's/<h1>[ ]*\(.*\)[ ]*</\1/p'
+    sed -n 's/<h1>[ \t]*\(.*\)[ \t]*</\1/p' |\
+    sed 's/[ ]*$//'
 }
 
 make_name() {
-  one=$(get_name "$1")
-  two=$(get_name "$2")
-  
-  printf '%s and %s' "$one" "$two"
+  if [[ "$#" -eq 1 ]]; then
+    get_name "$1"
+  else
+    str=''
+    for i in "$@"; do
+      str+="$(get_name "$i"), "
+    done
+    echo -ne $str | sed 's/,[ \t]*$//' | sed 's/\(.*\),/\1 and/'
+  fi
 }
 
-export GIT_AUTHOR_EMAIL=$(make_email $1 $2)
-export GIT_AUTHOR_NAME=$(make_name $1 $2)
+do_stitch() {
+  email=$(make_email "$@")
+  name=$(make_name "$@")
+  
+  printf '%s\n%s\n' "$email" "$name"
+  
+  printf '%s\n%s\n' \
+    "export GIT_AUTHOR_EMAIL='$email'" \
+    "export GIT_AUTHOR_NAME='$name'" > $SOURCE
+}
 
-echo $GIT_AUTHOR_EMAIL
-echo $GIT_AUTHOR_NAME
+do_unstitch() {
+  echo -ne 'unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL\n' > $SOURCE
+}
+
+print_help() {
+  echo -ne 'Usage: stitch USERNAMES...
+       stitch [OPTION]
+  
+  Stitch allows you to set your git author for pairing. It uses bitbucket to get the full names 
+  from a list of usernames.
+  
+ SETUP
+   To begin you will need to add something to your .bashrc/.zshrc/whatever, like:
+   
+     $ stitch --setup >> ~/.bashrc
+     
+   Then set the email address:
+   
+     $ stitch --set-email dev@example.com
+     
+   Now when you run `stitch a b` it will set the git author email to `dev+a+b@example.com`.
+'
+}
+
+print_setup() {
+  echo -ne 'stitch() {
+  command stitch "$@"
+  if [[ -s "$HOME/.stitch_source" ]] ; then source "$HOME/.stitch_source" ; fi
+}
+alias unstitch="stitch -u"
+'
+}
+
+set_email() {
+  echo -ne "$1\n" > $EMAIL
+}
+
+case "$1" in
+'--setup')
+  print_setup
+  ;;
+'--set-email')
+  if [[ "$#" -ne 2 ]]; then
+    echo '--set-email requires an argument'
+    exit 2
+  fi
+
+  set_email $2
+  ;;
+'-u')
+  do_unstitch
+  ;;
+'--help'|'-h')
+  print_help
+  ;;
+*)
+  if [[ "$#" -eq 0 ]]; then
+    print_help
+    exit 2
+  fi
+
+  do_stitch "$@"
+  ;;
+esac
